@@ -1,0 +1,41 @@
+name: mutate-vllm-shell
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  mutate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      SRC: vllm/vllm-openai:v0.26.0
+      MID: ghcr.io/${{ github.repository_owner }}/j-vllm:v0.26.0
+      DST: ghcr.io/${{ github.repository_owner }}/j-vllm:shell
+    steps:
+      - name: Install crane
+        run: |
+          curl -sSL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_x86_64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin crane
+          crane version
+
+      - name: Login to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Copy base image (idempotent - blobs already present)
+        run: crane copy "$SRC" "$MID"
+
+      - name: Mutate entrypoint (no double quotes - crane parses --cmd as CSV)
+        run: |
+          SCRIPT='set -x; apt-get update -qq; apt-get install -y -qq openssh-server; mkdir -p /run/sshd /root/.ssh; echo $PUBLIC_KEY > /root/.ssh/authorized_keys; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; /usr/sbin/sshd; sleep infinity'
+          crane mutate "$MID" --entrypoint /bin/bash --cmd=-c --cmd="$SCRIPT" -t "$DST"
+
+      - name: Verify config
+        run: |
+          crane config "$DST" > cfg.json
+          python3 -c "import json;c=json.load(open('cfg.json'))['config'];print('Entrypoint:',c.get('Entrypoint'));print('Cmd:',c.get('Cmd'))"
+          echo "shell digest: $(crane digest "$DST")"
+          echo "base  digest: $(crane digest "$MID")"
